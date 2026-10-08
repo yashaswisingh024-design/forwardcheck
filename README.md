@@ -4,6 +4,73 @@
 
 ForwardCheck is a hackathon-ready web app for checking WhatsApp forwards, social posts, rumours, and other claims against **live web evidence**. It combines **SerpApi** retrieval with **Gemini** evidence synthesis and presents a transparent verdict, source coverage, and a shareable correction.
 
+
+## 🏆 Why ForwardCheck
+
+ForwardCheck is built around one principle: **retrieve live evidence first, then use AI to explain it.**
+
+Unlike a chatbot that answers from a static knowledge cutoff, ForwardCheck uses **SerpApi as its live evidence layer** and exposes the retrieved sources to the user.
+
+### 🔎 SerpApi is the core retrieval engine
+
+Every verification request can trigger multiple live SerpApi searches:
+
+| SerpApi search | What it contributes |
+|---|---|
+| **Google Search** | Broad discovery of pages discussing the claim |
+| **Google News** | Recent reporting and developing stories |
+| **Official-domain searches** | Government and authoritative public sources |
+| **Fact-check searches** | Published debunks, confirmations, and context |
+| **India-focused targeting** | Better relevance for Indian public-interest claims |
+
+ForwardCheck then **normalizes, deduplicates, classifies, and prioritizes** the retrieved results before sending the evidence set to Gemini.
+
+> **SerpApi retrieves → ForwardCheck organizes → Gemini explains.**
+
+That separation is a key trust feature: **Gemini is not treated as the source of truth.** It synthesizes the live evidence retrieved through SerpApi, while the user can inspect the underlying source cards.
+
+### 🧠 Gemini is the synthesis layer
+
+Gemini receives the claim plus retrieved evidence and returns structured JSON containing a verdict, confidence, explanation, evidence-to-source relationships, and a shareable correction.
+
+It is explicitly instructed to avoid inventing sources, URLs, quotes, or evidence. If the evidence is weak or conflicting, ForwardCheck can return **Unverified**, **Insufficient Evidence**, or **Mixed**.
+
+### 🛡️ Evidence-first fallback
+
+If Gemini is temporarily unavailable after live sources have already been retrieved, ForwardCheck can switch to a conservative **evidence-only fallback**. The UI clearly labels this mode so users never confuse it with an AI synthesis.
+
+---
+
+## 🎯 The verification pipeline
+
+**Claim → SerpApi live search → source normalization → source classification → Gemini synthesis → verdict + evidence → shareable correction**
+
+1. User pastes a WhatsApp forward, social post, rumour, or public-interest claim.
+2. ForwardCheck queries live evidence through SerpApi.
+3. Results are combined across web, news, official, and fact-check searches.
+4. Duplicate URLs are removed and sources are classified.
+5. Gemini evaluates only the retrieved evidence.
+6. The frontend shows the verdict, confidence, evidence, and source network.
+7. The user can copy or share a responsible correction.
+
+---
+
+## 🏅 Why this is strong for the SerpApi India Hackathon
+
+- **Real SerpApi usage:** SerpApi is not decorative; it powers the live evidence retrieval layer.
+- **Clear public-interest use case:** misinformation spreads through WhatsApp and social media every day.
+- **Evidence transparency:** users see the sources behind the verdict.
+- **Freshness:** Google Search and Google News searches bring current evidence into each verification.
+- **AI with guardrails:** Gemini synthesizes evidence instead of being asked to invent an answer.
+- **Uncertainty by design:** the system can say Unverified rather than forcing a binary true/false.
+- **Actionable output:** users get a correction they can immediately share.
+
+### One-line pitch
+
+> **ForwardCheck turns viral claims into verifiable evidence before they become forwards.**
+
+---
+
 ## What it does
 
 1. User pastes a claim or forwarded message.
@@ -183,7 +250,7 @@ For a strong hackathon demo:
 3. Reveal the verdict.
 4. Open the source cards and show official/fact-check evidence.
 5. Copy the WhatsApp correction.
-6. Explain that **SerpApi supplies the live evidence layer while Gemini synthesizes the evidence into a structured, user-friendly verdict.**
+6. Explain the architecture: **SerpApi supplies live evidence; ForwardCheck organizes it; Gemini synthesizes only that evidence into a structured verdict.**
 
 ## Security / trust principles
 
