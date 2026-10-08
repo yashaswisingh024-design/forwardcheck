@@ -220,10 +220,30 @@ function Home() {
         window.clearTimeout(requestTimeout);
       }
 
-      const data = await response.json();
+      const contentType = response.headers.get("content-type") || "";
+      const responseText = await response.text();
+
+      let data: any = null;
+      if (contentType.includes("application/json")) {
+        try {
+          data = JSON.parse(responseText);
+        } catch {
+          throw new Error("The verification server returned invalid JSON. Please try again.");
+        }
+      } else {
+        // Never expose the browser's raw JSON parser error when a proxy/server
+        // accidentally returns HTML.
+        throw new Error(
+          `Verification API returned an unexpected response (HTTP ${response.status}). Please try again.`
+        );
+      }
 
       if (!response.ok) {
-        throw new Error(data.error || "Verification failed.");
+        throw new Error(data?.error || `Verification failed (HTTP ${response.status}).`);
+      }
+
+      if (!data?.verdict || !Array.isArray(data?.sources)) {
+        throw new Error("The verification server returned an incomplete result. Please try again.");
       }
 
       setResult(data as VerifyResult);
