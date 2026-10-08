@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "ForwardCheck"
+description = "A responsive claim-checking landing screen for ForwardCheck, helping people pause before forwarding viral messages."
+version = "1.0.0"
+id = "artifacts/forwardcheck"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 18697
+
+[services.development]
+run = "pnpm --filter @workspace/forwardcheck run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/forwardcheck", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/forwardcheck/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "18697"
+BASE_PATH = "/"
