@@ -60,6 +60,7 @@ export type VerifyResult = {
   evidence: EvidenceItem[];
   correction: string;
   sources: Source[];
+  analysisMode?: "gemini" | "evidence-only-fallback";
 };
 
 const sampleClaims = [
@@ -590,6 +591,12 @@ function Home() {
                       <span>Summary Explanation</span>
                     </div>
                     <p className="fc-summary-text">{result.summary}</p>
+                    {result.analysisMode === "evidence-only-fallback" && (
+                      <div className="fc-fallback-note">
+                        <Info size={14} />
+                        <span>AI synthesis is temporarily unavailable. This conservative result is based only on signals found in the retrieved live sources.</span>
+                      </div>
+                    )}
 
                     <div className="fc-why-section">
                       <h3>Why this verdict?</h3>
