@@ -202,6 +202,77 @@ function isRetryableGeminiStatus(status: number): boolean {
   return [429, 500, 502, 503, 504].includes(status);
 }
 
+function buildEvidenceOnlyFallback(
+  claim: string,
+  sources: ProcessedSource[],
+  language: string,
+) {
+  const factCheckSources = sources.filter((s) => s.kind === "fact-check");
+  const officialSources = sources.filter((s) => s.kind === "official");
+  const strongRefutation = [...factCheckSources, ...officialSources].filter((s) =>
+    /\b(false|fake|fals(e|ified)|debunk|hoax|misleading|scam|fraud|incorrect|not true|no evidence|does not|cannot|denied|refuted|clarif)/i.test(
+      `${s.title} ${s.snippet}`,
+    ),
+  );
+  const strongSupport = [...officialSources, ...factCheckSources].filter((s) =>
+    /\b(confirms?|confirmed|announced|official|eligible|available|valid|true|verified|approved|launched)/i.test(
+      `${s.title} ${s.snippet}`,
+    ),
+  );
+
+  let verdict: "Supported" | "Debunked" | "Mixed" | "Unverified" | "Insufficient Evidence" =
+    "Insufficient Evidence";
+  let summary = "Live evidence was retrieved, but the AI synthesis service was unavailable. ForwardCheck is not making a stronger claim than the evidence supports.";
+
+  if (strongRefutation.length > 0 && strongSupport.length === 0) {
+    verdict = "Debunked";
+    summary = "Credible live sources contain signals that contradict this claim.";
+  } else if (strongSupport.length > 0 && strongRefutation.length === 0) {
+    verdict = "Supported";
+    summary = "Credible live sources contain signals that support this claim.";
+  } else if (strongSupport.length > 0 && strongRefutation.length > 0) {
+    verdict = "Mixed";
+    summary = "Live sources contain conflicting signals, so the evidence should be treated cautiously.";
+  } else if (sources.length > 0) {
+    verdict = "Unverified";
+    summary = "Live sources were found, but they do not provide a strong enough signal to verify or debunk the claim.";
+  }
+
+  const relevant = [...strongRefutation, ...strongSupport].slice(0, 4);
+  const why =
+    relevant.length > 0
+      ? relevant.map((s) => `${s.source}: ${s.snippet || s.title}`.slice(0, 240))
+      : [
+          sources.length
+            ? `${sources.length} live sources were retrieved, but none provided a decisive verification signal.`
+            : "No reliable live sources were retrieved.",
+          "The AI synthesis service was unavailable, so ForwardCheck is deliberately avoiding an unsupported verdict.",
+        ];
+
+  const evidence = relevant.map((s) => ({
+    sourceId: s.id,
+    stance: strongRefutation.includes(s) ? "contradicts" as const : "supports" as const,
+    point: s.snippet || s.title,
+  }));
+
+  const correction =
+    language === "Hindi"
+      ? `ForwardCheck update: “${claim}” को उपलब्ध live sources से निर्णायक रूप से verify नहीं किया जा सका। कृपया official sources देखें और बिना पुष्टि आगे forward न करें.`
+      : language === "Marathi"
+        ? `ForwardCheck अपडेट: “${claim}” हा दावा उपलब्ध live sources वरून निर्णायकपणे verify करता आला नाही. कृपया official sources तपासा आणि खात्री न झाल्यास पुढे forward करू नका.`
+        : `ForwardCheck update: “${claim}” could not be conclusively verified from the available live sources. Please check the cited official/credible sources before forwarding.`;
+
+  return {
+    verdict,
+    confidence: sources.length ? Math.min(60, 25 + sources.length * 3) : 10,
+    summary,
+    why,
+    evidence,
+    correction,
+    analysisMode: "evidence-only-fallback" as const,
+  };
+}
+
 async function requestGemini(
   modelNames: string[],
   body: string,
@@ -560,16 +631,36 @@ router.post("/verify", async (req, res) => {
     const sources = await fetchSerpApiResults(trimmedClaim, serpApiKey);
     logger.info({ count: sources.length }, "[VERIFY] evidence count");
 
-    const evaluation = await callGemini(
-      trimmedClaim,
-      langLabel,
-      sources,
-      geminiApiKey,
-      geminiModel,
-    );
+    let evaluation;
+    try {
+      evaluation = await callGemini(
+        trimmedClaim,
+        langLabel,
+        sources,
+        geminiApiKey,
+        geminiModel,
+      );
+    } catch (err) {
+      if (
+        err instanceof VerificationError &&
+        ["GEMINI_UNAVAILABLE", "GEMINI_NETWORK_ERROR", "GEMINI_EMPTY_RESPONSE"].includes(err.code)
+      ) {
+        logger.warn(
+          { code: err.code, status: err.statusCode, sourceCount: sources.length },
+          "[VERIFY] Gemini unavailable; using conservative evidence-only fallback",
+        );
+        evaluation = buildEvidenceOnlyFallback(trimmedClaim, sources, langLabel);
+      } else {
+        throw err;
+      }
+    }
 
     logger.info(
-      { elapsedMs: Date.now() - startedAt, model: geminiModel },
+      {
+        elapsedMs: Date.now() - startedAt,
+        model: geminiModel,
+        analysisMode: evaluation.analysisMode || "gemini",
+      },
       "[VERIFY] verification completed",
     );
 
