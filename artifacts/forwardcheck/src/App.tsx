@@ -140,6 +140,7 @@ const verdictConfig: Record<
 };
 
 function Home() {
+  const [, navigate] = useLocation();
   const [claim, setClaim] = useState("");
   const [verificationClaim, setVerificationClaim] = useState("");
   const [language, setLanguage] = useState<Language>("English");
@@ -150,6 +151,18 @@ function Home() {
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [activeTab, setActiveTab] = useState<"all" | "official" | "fact-check" | "news">("all");
+
+  function returnHome() {
+    setResult(null);
+    setError(null);
+    setLoading(false);
+    setVerificationClaim("");
+    setCurrentStageIndex(0);
+    setCopied(false);
+    setActiveTab("all");
+    navigate("/");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
 
   const evidenceBySourceId = useMemo(() => {
     const map = new Map<string, EvidenceItem>();
@@ -292,14 +305,19 @@ function Home() {
       <div className="fc-container">
         {/* Navigation Header */}
         <header className="fc-navbar">
-          <div className="fc-brand-group">
+          <button
+            type="button"
+            className="fc-brand-group fc-brand-home"
+            onClick={returnHome}
+            aria-label="Return to ForwardCheck home"
+          >
             <div className="fc-logo-badge">
               <ShieldCheck size={18} className="fc-logo-icon" />
             </div>
             <div className="fc-brand-title">
               Forward<span className="fc-brand-accent">Check</span>
             </div>
-          </div>
+          </button>
 
           <div className="fc-nav-actions">
             <div className="fc-lang-picker">
