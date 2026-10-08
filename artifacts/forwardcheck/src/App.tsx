@@ -139,6 +139,7 @@ const verdictConfig: Record<
 
 function Home() {
   const [claim, setClaim] = useState("");
+  const [verificationClaim, setVerificationClaim] = useState("");
   const [language, setLanguage] = useState<Language>("English");
   const [howItWorksOpen, setHowItWorksOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -189,6 +190,7 @@ function Home() {
       return;
     }
 
+    setVerificationClaim(trimmed);
     setLoading(true);
     setResult(null);
     setError(null);
@@ -453,7 +455,7 @@ function Home() {
               <h2 className="fc-loading-title">Verifying against live web...</h2>
 
               <div className="fc-loading-claim-quote">
-                “{claim}”
+                “{verificationClaim}”
               </div>
 
               <div className="fc-stages-timeline">
