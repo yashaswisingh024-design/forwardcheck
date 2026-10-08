@@ -203,17 +203,22 @@ function isRetryableGeminiStatus(status: number): boolean {
 }
 
 async function requestGemini(
-  geminiUrl: string,
+  modelNames: string[],
   body: string,
   geminiKey: string,
 ): Promise<Response> {
-  const maxAttempts = 3;
+  // Keep verification responsive: try the configured model once, then
+  // fall back to the lightweight stable model if Gemini is busy/slow.
+  const models = [...new Set(modelNames.filter(Boolean))];
 
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    logger.info({ attempt }, `[VERIFY] Gemini attempt ${attempt}`);
+  for (let modelIndex = 0; modelIndex < models.length; modelIndex++) {
+    const modelName = models[modelIndex];
+    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent`;
+
+    logger.info({ model: modelName }, "[VERIFY] Gemini request started");
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 30000);
+    const timeout = setTimeout(() => controller.abort(), 15000);
 
     try {
       const response = await fetch(geminiUrl, {
@@ -227,8 +232,8 @@ async function requestGemini(
       });
 
       logger.info(
-        { attempt, status: response.status },
-        `[VERIFY] Gemini response status: ${response.status}`,
+        { model: modelName, status: response.status },
+        "[VERIFY] Gemini response status",
       );
 
       if (response.ok) return response;
@@ -249,61 +254,42 @@ async function requestGemini(
         );
       }
 
-      if (!isRetryableGeminiStatus(response.status) || attempt === maxAttempts) {
-        if (response.status === 429) {
-          throw new VerificationError(
-            "Verification is temporarily rate-limited. Please try again in a moment.",
-            429,
-            "GEMINI_RATE_LIMIT",
-          );
-        }
-
-        throw new VerificationError(
-          "Live verification is temporarily busy. We retried the evidence analysis, but the AI service is currently unavailable. Please try again.",
-          response.status >= 500 ? 503 : response.status,
-          "GEMINI_UNAVAILABLE",
+      // For transient service failures, immediately try the next model.
+      if ([429, 500, 502, 503, 504].includes(response.status)) {
+        logger.warn(
+          { model: modelName, status: response.status, hasFallback: modelIndex < models.length - 1 },
+          "[VERIFY] Gemini temporarily unavailable",
         );
+        continue;
       }
 
-      const backoffMs = Math.min(4000, 1000 * 2 ** (attempt - 1)) + Math.floor(Math.random() * 250);
-      logger.warn(
-        { attempt, nextDelayMs: backoffMs, status: response.status },
-        `[VERIFY] retrying Gemini in ${backoffMs}ms`,
+      throw new VerificationError(
+        "The AI verification service rejected the request. Please try again.",
+        response.status,
+        "GEMINI_UNAVAILABLE",
       );
-      await sleep(backoffMs);
     } catch (err) {
       if (err instanceof VerificationError) throw err;
 
       if (err instanceof Error && err.name === "AbortError") {
-        if (attempt === maxAttempts) {
-          throw new VerificationError(
-            "Verification took too long to complete. Please try again.",
-            504,
-            "GEMINI_TIMEOUT",
-          );
-        }
-
-        const backoffMs = Math.min(4000, 1000 * 2 ** (attempt - 1)) + Math.floor(Math.random() * 250);
         logger.warn(
-          { attempt, nextDelayMs: backoffMs },
-          `[VERIFY] Gemini timed out; retrying in ${backoffMs}ms`,
+          { model: modelName, hasFallback: modelIndex < models.length - 1 },
+          "[VERIFY] Gemini timed out",
         );
-        await sleep(backoffMs);
-      } else {
-        if (attempt === maxAttempts) {
-          throw new VerificationError(
-            "We couldn't reach the verification service. Please try again.",
-            502,
-            "GEMINI_NETWORK_ERROR",
-          );
-        }
+        continue;
+      }
 
-        const backoffMs = Math.min(4000, 1000 * 2 ** (attempt - 1)) + Math.floor(Math.random() * 250);
-        logger.warn(
-          { attempt, nextDelayMs: backoffMs },
-          `[VERIFY] Gemini network error; retrying in ${backoffMs}ms`,
+      logger.warn(
+        { model: modelName, err, hasFallback: modelIndex < models.length - 1 },
+        "[VERIFY] Gemini network error",
+      );
+
+      if (modelIndex === models.length - 1) {
+        throw new VerificationError(
+          "We couldn't reach the verification service. Please try again.",
+          502,
+          "GEMINI_NETWORK_ERROR",
         );
-        await sleep(backoffMs);
       }
     } finally {
       clearTimeout(timeout);
@@ -311,7 +297,7 @@ async function requestGemini(
   }
 
   throw new VerificationError(
-    "Live verification is temporarily unavailable. Please try again.",
+    "Live verification is temporarily busy. Please try again.",
     503,
     "GEMINI_UNAVAILABLE",
   );
@@ -373,8 +359,6 @@ Return ONLY valid JSON:
   "correction": "WhatsApp-forwardable text..."
 }`;
 
-  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent`;
-
   const body = JSON.stringify({
     contents: [{ parts: [{ text: prompt }] }],
     generationConfig: {
@@ -383,7 +367,11 @@ Return ONLY valid JSON:
     },
   });
 
-  const response = await requestGemini(geminiUrl, body, geminiKey);
+  const response = await requestGemini(
+    [modelName, "gemini-3.5-flash-lite"],
+    body,
+    geminiKey,
+  );
   const data = (await response.json()) as {
     candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
   };
@@ -479,7 +467,7 @@ router.post("/verify", async (req, res) => {
 
     const serpApiKey = process.env.SERPAPI_KEY || process.env.SERP_API_KEY;
     const geminiApiKey = process.env.GEMINI_API_KEY;
-    const geminiModel = process.env.GEMINI_MODEL || "gemini-3.6-flash";
+    const geminiModel = process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
 
     logger.info({ claimLength: trimmedClaim.length }, "[VERIFY] claim received");
 
