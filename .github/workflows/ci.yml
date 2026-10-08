@@ -1,0 +1,64 @@
+name: ForwardCheck CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Build frontend
+        run: pnpm --filter @workspace/forwardcheck build
+
+      - name: Build API
+        run: pnpm --filter @workspace/api-server build
+
+      - name: Start production server
+        env:
+          PORT: 5000
+          NODE_ENV: production
+          BASE_PATH: /
+          FRONTEND_DIST: artifacts/forwardcheck/dist/public
+        run: |
+          pnpm --filter @workspace/api-server start > /tmp/forwardcheck.log 2>&1 &
+          echo $! > /tmp/forwardcheck.pid
+          for i in {1..20}; do
+            if curl -fsS http://127.0.0.1:5000/api/healthz >/tmp/health.json; then
+              break
+            fi
+            sleep 1
+          done
+          test -s /tmp/health.json
+          grep -q '"status":"ok"' /tmp/health.json
+          curl -fsS http://127.0.0.1:5000/ | grep -q "ForwardCheck"
+
+      - name: Show server log on failure
+        if: failure()
+        run: cat /tmp/forwardcheck.log || true
+
+      - name: Stop production server
+        if: always()
+        run: kill $(cat /tmp/forwardcheck.pid) 2>/dev/null || true
