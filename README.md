@@ -4,6 +4,7 @@
 
 ForwardCheck is a hackathon-ready web app for checking WhatsApp forwards, social posts, rumours, and other claims against **live web evidence**. It combines **SerpApi** retrieval with **Gemini** evidence synthesis and presents a transparent verdict, source coverage, and a shareable correction.
 
+VISIT NOW - https://forwardcheck.onrender.com/
 
 ## 🏆 Why ForwardCheck
 
