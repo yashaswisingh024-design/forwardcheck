@@ -142,6 +142,8 @@ The endpoint validates the claim, retrieves live evidence, asks Gemini for struc
 - API errors always return JSON rather than Express HTML.
 - Frontend rejects unexpected HTML/non-JSON API responses cleanly.
 - No fabricated sources, URLs, quotes, or verdicts.
+- If Gemini is temporarily unavailable, ForwardCheck switches to a **conservative evidence-only fallback**. It only uses strong signals present in retrieved source titles/snippets and can return Unverified/Insufficient Evidence rather than inventing certainty.
+- The UI explicitly labels this fallback mode so it is never confused with an AI-generated synthesis.
 - Secrets are read only from environment variables.
 
 ## Verification
