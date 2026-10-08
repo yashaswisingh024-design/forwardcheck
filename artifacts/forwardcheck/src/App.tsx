@@ -28,6 +28,7 @@ import {
   AlertTriangle,
   Network,
 } from "lucide-react";
+import { motion } from "framer-motion";
 import { Route, Switch, useLocation, Router as WouterRouter } from "wouter";
 
 const queryClient = new QueryClient();
@@ -395,24 +396,110 @@ function Home() {
         <main className="fc-main-content">
           {/* SEARCH CONSOLE STATE */}
           {!result && !loading && (
-            <div className="fc-hero-section">
-              <div className="fc-hero-tag">
+            <motion.div
+              className="fc-hero-section"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              transition={{ duration: 0.45, ease: "easeOut" }}
+            >
+              <motion.div
+                className="fc-hero-signal fc-signal-search"
+                initial={{ opacity: 0, x: -28, y: 14, scale: 0.8 }}
+                animate={{ opacity: 1, x: 0, y: 0, scale: 1 }}
+                transition={{ delay: 0.75, type: "spring", stiffness: 180, damping: 16 }}
+              >
+                <Search size={12} />
+                <span>LIVE SEARCH</span>
+              </motion.div>
+
+              <motion.div
+                className="fc-hero-signal fc-signal-official"
+                initial={{ opacity: 0, x: 28, y: 14, scale: 0.8 }}
+                animate={{ opacity: 1, x: 0, y: 0, scale: 1 }}
+                transition={{ delay: 0.95, type: "spring", stiffness: 180, damping: 16 }}
+              >
+                <ShieldCheck size={12} />
+                <span>OFFICIAL SOURCES</span>
+              </motion.div>
+
+              <motion.div
+                className="fc-hero-tag"
+                initial={{ opacity: 0, y: 18, scale: 0.88 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                transition={{ delay: 0.15, type: "spring", stiffness: 180, damping: 17 }}
+              >
                 <span className="fc-dot-pulse" />
                 <span>A pause before the forward</span>
-              </div>
+              </motion.div>
 
-              <h1 className="fc-hero-headline">
-                Stop. Search. <span className="fc-accent-text">Verify.</span>
-                <br />
-                Before You Forward.
-              </h1>
+              <motion.h1
+                className="fc-hero-headline"
+                initial={{ opacity: 0, scale: 0.78, y: 34, filter: "blur(12px)" }}
+                animate={{ opacity: 1, scale: 1, y: 0, filter: "blur(0px)" }}
+                transition={{ delay: 0.28, duration: 0.9, type: "spring", stiffness: 145, damping: 15 }}
+              >
+                <span className="fc-headline-line">
+                  <motion.span
+                    className="fc-headline-word"
+                    initial={{ opacity: 0, y: 24 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.38, type: "spring", stiffness: 220, damping: 16 }}
+                  >
+                    Stop.
+                  </motion.span>{" "}
+                  <motion.span
+                    className="fc-headline-word"
+                    initial={{ opacity: 0, y: 24 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.48, type: "spring", stiffness: 220, damping: 16 }}
+                  >
+                    Search.
+                  </motion.span>{" "}
+                  <motion.span
+                    className="fc-headline-word fc-accent-text"
+                    initial={{ opacity: 0, y: 24, scale: 0.86 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    transition={{ delay: 0.58, type: "spring", stiffness: 220, damping: 14 }}
+                  >
+                    Verify.
+                  </motion.span>
+                </span>
+                <span className="fc-headline-line fc-headline-line-second">
+                  <motion.span
+                    className="fc-headline-word"
+                    initial={{ opacity: 0, y: 30 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.68, type: "spring", stiffness: 190, damping: 16 }}
+                  >
+                    Before You Forward.
+                  </motion.span>
+                </span>
+              </motion.h1>
 
-              <p className="fc-hero-subtext">
+              <motion.div
+                className="fc-hero-glow"
+                aria-hidden="true"
+                initial={{ opacity: 0, scale: 0.6 }}
+                animate={{ opacity: 0.9, scale: 1 }}
+                transition={{ delay: 0.35, duration: 1.1, ease: "easeOut" }}
+              />
+
+              <motion.p
+                className="fc-hero-subtext"
+                initial={{ opacity: 0, y: 18 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.82, duration: 0.55, ease: "easeOut" }}
+              >
                 Check viral WhatsApp messages and social media claims against live official government sources, press bureaus, and verified fact-checkers.
-              </p>
+              </motion.p>
 
               {/* Console Input Card */}
-              <div className="fc-console-card">
+              <motion.div
+                className="fc-console-card"
+                initial={{ opacity: 0, y: 42, scale: 0.96 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                transition={{ delay: 1.0, duration: 0.65, type: "spring", stiffness: 130, damping: 18 }}
+              >
                 <div className="fc-console-header">
                   <div className="fc-console-title">
                     <MessageSquare size={16} className="fc-icon-green" />
