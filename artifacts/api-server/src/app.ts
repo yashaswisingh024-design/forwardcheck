@@ -55,7 +55,7 @@ app.use((err: unknown, req: express.Request, res: express.Response, next: expres
       });
     }
   }
-  next(err);
+  return next(err);
 });
 
 function getModuleDir(): string {
