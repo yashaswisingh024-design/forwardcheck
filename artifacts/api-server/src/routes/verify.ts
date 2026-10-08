@@ -254,6 +254,16 @@ async function requestGemini(
         );
       }
 
+      // A model can be unavailable/renamed. Fall through to the known lightweight
+      // fallback rather than exposing a raw 404 to the user.
+      if (response.status === 404 && modelIndex < models.length - 1) {
+        logger.warn(
+          { model: modelName },
+          "[VERIFY] Gemini model unavailable; trying fallback model",
+        );
+        continue;
+      }
+
       // For transient service failures, immediately try the next model.
       if ([429, 500, 502, 503, 504].includes(response.status)) {
         logger.warn(
@@ -363,12 +373,38 @@ Return ONLY valid JSON:
     contents: [{ parts: [{ text: prompt }] }],
     generationConfig: {
       responseMimeType: "application/json",
+      responseSchema: {
+        type: "OBJECT",
+        properties: {
+          verdict: {
+            type: "STRING",
+            enum: ["Supported", "Debunked", "Mixed", "Unverified", "Insufficient Evidence"],
+          },
+          confidence: { type: "NUMBER" },
+          summary: { type: "STRING" },
+          why: { type: "ARRAY", items: { type: "STRING" } },
+          evidence: {
+            type: "ARRAY",
+            items: {
+              type: "OBJECT",
+              properties: {
+                sourceId: { type: "STRING" },
+                stance: { type: "STRING", enum: ["supports", "contradicts", "context"] },
+                point: { type: "STRING" },
+              },
+              required: ["sourceId", "stance", "point"],
+            },
+          },
+          correction: { type: "STRING" },
+        },
+        required: ["verdict", "confidence", "summary", "why", "evidence", "correction"],
+      },
       temperature: 0.1,
     },
   });
 
   const response = await requestGemini(
-    [modelName, "gemini-3.5-flash-lite"],
+    [modelName, "gemini-2.5-flash-lite"],
     body,
     geminiKey,
   );
