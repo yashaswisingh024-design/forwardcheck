@@ -22,6 +22,20 @@ interface ProcessedSource {
   kind: "official" | "fact-check" | "news" | "web";
 }
 
+interface VerificationEvaluation {
+  verdict: "Supported" | "Debunked" | "Mixed" | "Unverified" | "Insufficient Evidence";
+  confidence: number;
+  summary: string;
+  why: string[];
+  evidence: Array<{
+    sourceId: string;
+    stance: "supports" | "contradicts" | "context";
+    point: string;
+  }>;
+  correction: string;
+  analysisMode?: "gemini" | "evidence-only-fallback";
+}
+
 class VerificationError extends Error {
   constructor(
     message: string,
@@ -206,7 +220,7 @@ function buildEvidenceOnlyFallback(
   claim: string,
   sources: ProcessedSource[],
   language: string,
-) {
+): VerificationEvaluation {
   const factCheckSources = sources.filter((s) => s.kind === "fact-check");
   const officialSources = sources.filter((s) => s.kind === "official");
   const strongRefutation = [...factCheckSources, ...officialSources].filter((s) =>
@@ -423,7 +437,7 @@ async function callGemini(
   sources: ProcessedSource[],
   geminiKey: string,
   modelName: string,
-) {
+): Promise<VerificationEvaluation> {
   const sourcesText =
     sources.length > 0
       ? sources
