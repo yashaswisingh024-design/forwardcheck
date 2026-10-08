@@ -561,8 +561,8 @@ function Home() {
                     ))}
                   </div>
                 </div>
-              </div>
-            </div>
+              </motion.div>
+            </motion.div>
           )}
 
           {/* LOADING VERIFICATION STAGE */}
