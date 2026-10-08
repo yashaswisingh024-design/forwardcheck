@@ -22,8 +22,20 @@ interface ProcessedSource {
   kind: "official" | "fact-check" | "news" | "web";
 }
 
-function determineKind(url: string, engine?: string): "official" | "fact-check" | "news" | "web" {
+class VerificationError extends Error {
+  constructor(
+    message: string,
+    public readonly statusCode: number,
+    public readonly code: string,
+  ) {
+    super(message);
+    this.name = "VerificationError";
+  }
+}
+
+function determineKind(url: string, engine?: string): ProcessedSource["kind"] {
   const lowerUrl = url.toLowerCase();
+
   if (
     lowerUrl.includes(".gov.in") ||
     lowerUrl.includes("pib.gov.in") ||
@@ -34,6 +46,7 @@ function determineKind(url: string, engine?: string): "official" | "fact-check" 
   ) {
     return "official";
   }
+
   if (
     lowerUrl.includes("boomlive.in") ||
     lowerUrl.includes("altnews.in") ||
@@ -44,6 +57,7 @@ function determineKind(url: string, engine?: string): "official" | "fact-check" 
   ) {
     return "fact-check";
   }
+
   if (
     engine === "google_news" ||
     lowerUrl.includes("news") ||
@@ -54,84 +68,253 @@ function determineKind(url: string, engine?: string): "official" | "fact-check" 
   ) {
     return "news";
   }
+
   return "web";
 }
 
 function extractDomain(url: string): string {
   try {
-    const parsed = new URL(url);
-    return parsed.hostname.replace(/^www\./, "");
+    return new URL(url).hostname.replace(/^www\./, "");
   } catch {
     return "Web Source";
   }
 }
 
-async function fetchSerpApiResults(claim: string, apiKey: string): Promise<ProcessedSource[]> {
-  const sources: ProcessedSource[] = [];
-  const seenUrls = new Set<string>();
+async function fetchSerpQuery(
+  claim: string,
+  apiKey: string,
+  query: { engine: "google" | "google_news"; q: string },
+): Promise<ProcessedSource[]> {
+  try {
+    logger.info({ engine: query.engine }, "[VERIFY] SerpApi search started");
 
-  const queries = [
+    const url = new URL("https://serpapi.com/search.json");
+    url.searchParams.set("api_key", apiKey);
+    url.searchParams.set("engine", query.engine);
+    url.searchParams.set("q", query.q);
+    url.searchParams.set("gl", "in");
+    url.searchParams.set("hl", "en");
+    url.searchParams.set("num", "8");
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 12000);
+
+    try {
+      const response = await fetch(url.toString(), { signal: controller.signal });
+
+      if (!response.ok) {
+        logger.warn(
+          { status: response.status, engine: query.engine },
+          "[VERIFY] SerpApi request returned non-OK status",
+        );
+        return [];
+      }
+
+      const data = (await response.json()) as {
+        news_results?: RawSerpResult[];
+        organic_results?: RawSerpResult[];
+      };
+
+      const rawList =
+        query.engine === "google_news"
+          ? data.news_results || []
+          : data.organic_results || [];
+
+      return rawList
+        .filter((item) => Boolean(item.link))
+        .map((item) => ({
+          id: "",
+          title: item.title || "Untitled Source",
+          url: item.link as string,
+          snippet: item.snippet || "",
+          source:
+            typeof item.source === "string"
+              ? item.source
+              : item.source?.name || extractDomain(item.link as string),
+          date: item.date,
+          kind: determineKind(item.link as string, query.engine),
+        }));
+    } finally {
+      clearTimeout(timeout);
+    }
+  } catch (err) {
+    logger.warn(
+      { err, engine: query.engine },
+      "[VERIFY] SerpApi search failed; continuing with other evidence",
+    );
+    return [];
+  }
+}
+
+async function fetchSerpApiResults(
+  claim: string,
+  apiKey: string,
+): Promise<ProcessedSource[]> {
+  const queries: Array<{ engine: "google" | "google_news"; q: string }> = [
     { engine: "google", q: claim },
     { engine: "google_news", q: claim },
     {
       engine: "google",
-      q: `${claim} site:pib.gov.in OR site:mygov.in OR site:boomlive.in OR site:altnews.in OR site:factly.in OR site:thequint.com`,
+      q: `${claim} site:pib.gov.in OR site:mygov.in OR site:india.gov.in OR site:boomlive.in OR site:altnews.in OR site:factly.in OR site:thequint.com`,
     },
   ];
 
-  for (const query of queries) {
-    try {
-      const url = new URL("https://serpapi.com/search.json");
-      url.searchParams.set("api_key", apiKey);
-      url.searchParams.set("engine", query.engine);
-      url.searchParams.set("q", query.q);
-      url.searchParams.set("gl", "in");
-      url.searchParams.set("hl", "en");
+  // These are independent searches, so run them concurrently.
+  const resultSets = await Promise.all(
+    queries.map((query) => fetchSerpQuery(claim, apiKey, query)),
+  );
 
-      const response = await fetch(url.toString());
-      if (!response.ok) {
-        logger.warn({ status: response.status, engine: query.engine }, "SerpApi request returned non-OK status");
-        continue;
-      }
+  const sources: ProcessedSource[] = [];
+  const seenUrls = new Set<string>();
 
-      const data = (await response.json()) as { news_results?: RawSerpResult[]; organic_results?: RawSerpResult[] };
-      const rawList: RawSerpResult[] = query.engine === "google_news"
-        ? (data.news_results || [])
-        : (data.organic_results || []);
+  // Prioritize official and fact-check evidence, then news, then general web.
+  const priority: Record<ProcessedSource["kind"], number> = {
+    official: 0,
+    "fact-check": 1,
+    news: 2,
+    web: 3,
+  };
 
-      for (const item of rawList) {
-        if (!item.link || seenUrls.has(item.link)) continue;
-        seenUrls.add(item.link);
+  for (const source of resultSets.flat().sort((a, b) => priority[a.kind] - priority[b.kind])) {
+    const normalizedUrl = source.url.trim().replace(/#.*$/, "");
+    if (!normalizedUrl || seenUrls.has(normalizedUrl)) continue;
 
-        let sourceName = "Web Source";
-        if (typeof item.source === "string") {
-          sourceName = item.source;
-        } else if (item.source && typeof item.source === "object" && item.source.name) {
-          sourceName = item.source.name;
-        } else {
-          sourceName = extractDomain(item.link);
-        }
+    seenUrls.add(normalizedUrl);
+    sources.push({ ...source, id: `S${sources.length + 1}` });
 
-        sources.push({
-          id: `S${sources.length + 1}`,
-          title: item.title || "Untitled Source",
-          url: item.link,
-          snippet: item.snippet || "",
-          source: sourceName,
-          date: item.date,
-          kind: determineKind(item.link, query.engine),
-        });
-
-        if (sources.length >= 20) break;
-      }
-    } catch (err) {
-      logger.error({ err, engine: query.engine }, "Error calling SerpApi");
-    }
-
-    if (sources.length >= 20) break;
+    // Keep the Gemini context deliberately small and high-signal.
+    if (sources.length >= 12) break;
   }
 
+  logger.info(
+    { count: sources.length },
+    "[VERIFY] SerpApi searches completed",
+  );
+
   return sources;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRetryableGeminiStatus(status: number): boolean {
+  return [429, 500, 502, 503, 504].includes(status);
+}
+
+async function requestGemini(
+  geminiUrl: string,
+  body: string,
+  geminiKey: string,
+): Promise<Response> {
+  const maxAttempts = 3;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    logger.info({ attempt }, `[VERIFY] Gemini attempt ${attempt}`);
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30000);
+
+    try {
+      const response = await fetch(geminiUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-goog-api-key": geminiKey,
+        },
+        body,
+        signal: controller.signal,
+      });
+
+      logger.info(
+        { attempt, status: response.status },
+        `[VERIFY] Gemini response status: ${response.status}`,
+      );
+
+      if (response.ok) return response;
+
+      if (response.status === 400) {
+        throw new VerificationError(
+          "The verification request was rejected. Please try a different claim.",
+          400,
+          "GEMINI_BAD_REQUEST",
+        );
+      }
+
+      if (response.status === 401 || response.status === 403) {
+        throw new VerificationError(
+          "Verification service authentication is not configured correctly.",
+          response.status,
+          "GEMINI_AUTH",
+        );
+      }
+
+      if (!isRetryableGeminiStatus(response.status) || attempt === maxAttempts) {
+        if (response.status === 429) {
+          throw new VerificationError(
+            "Verification is temporarily rate-limited. Please try again in a moment.",
+            429,
+            "GEMINI_RATE_LIMIT",
+          );
+        }
+
+        throw new VerificationError(
+          "Live verification is temporarily busy. We retried the evidence analysis, but the AI service is currently unavailable. Please try again.",
+          response.status >= 500 ? 503 : response.status,
+          "GEMINI_UNAVAILABLE",
+        );
+      }
+
+      const backoffMs = Math.min(4000, 1000 * 2 ** (attempt - 1)) + Math.floor(Math.random() * 250);
+      logger.warn(
+        { attempt, nextDelayMs: backoffMs, status: response.status },
+        `[VERIFY] retrying Gemini in ${backoffMs}ms`,
+      );
+      await sleep(backoffMs);
+    } catch (err) {
+      if (err instanceof VerificationError) throw err;
+
+      if (err instanceof Error && err.name === "AbortError") {
+        if (attempt === maxAttempts) {
+          throw new VerificationError(
+            "Verification took too long to complete. Please try again.",
+            504,
+            "GEMINI_TIMEOUT",
+          );
+        }
+
+        const backoffMs = Math.min(4000, 1000 * 2 ** (attempt - 1)) + Math.floor(Math.random() * 250);
+        logger.warn(
+          { attempt, nextDelayMs: backoffMs },
+          `[VERIFY] Gemini timed out; retrying in ${backoffMs}ms`,
+        );
+        await sleep(backoffMs);
+      } else {
+        if (attempt === maxAttempts) {
+          throw new VerificationError(
+            "We couldn't reach the verification service. Please try again.",
+            502,
+            "GEMINI_NETWORK_ERROR",
+          );
+        }
+
+        const backoffMs = Math.min(4000, 1000 * 2 ** (attempt - 1)) + Math.floor(Math.random() * 250);
+        logger.warn(
+          { attempt, nextDelayMs: backoffMs },
+          `[VERIFY] Gemini network error; retrying in ${backoffMs}ms`,
+        );
+        await sleep(backoffMs);
+      }
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  throw new VerificationError(
+    "Live verification is temporarily unavailable. Please try again.",
+    503,
+    "GEMINI_UNAVAILABLE",
+  );
 }
 
 async function callGemini(
@@ -139,16 +322,17 @@ async function callGemini(
   language: string,
   sources: ProcessedSource[],
   geminiKey: string,
-  modelName: string
+  modelName: string,
 ) {
-  const sourcesText = sources.length > 0
-    ? sources
-        .map(
-          (s) =>
-            `[Source ${s.id}]\nTitle: ${s.title}\nKind: ${s.kind}\nSource: ${s.source}\nURL: ${s.url}\nDate: ${s.date || "N/A"}\nSnippet: ${s.snippet}\n`
-        )
-        .join("\n")
-    : "No live web evidence could be retrieved for this claim.";
+  const sourcesText =
+    sources.length > 0
+      ? sources
+          .map(
+            (s) =>
+              `[Source ${s.id}]\nTitle: ${s.title}\nKind: ${s.kind}\nSource: ${s.source}\nURL: ${s.url}\nDate: ${s.date || "N/A"}\nSnippet: ${s.snippet.slice(0, 700)}`,
+          )
+          .join("\n\n")
+      : "No live web evidence could be retrieved for this claim.";
 
   const prompt = `You are ForwardCheck's evidence-based claim verification AI.
 Language for response: ${language}
@@ -159,87 +343,127 @@ CLAIM TO VERIFY:
 RETRIEVED LIVE WEB EVIDENCE:
 ${sourcesText}
 
-RULES & INSTRUCTIONS:
+RULES:
 1. Evaluate the claim strictly based ONLY on the supplied evidence.
-2. Do not invent facts, URLs, quotes, dates, or statistics.
-3. Official government sources (.gov.in, PIB) receive highest authority weight. Fact-check organizations (BOOM Live, Alt News, Factly) provide strong verification context.
-4. If the evidence directly supports the claim, output verdict "Supported".
-5. If the evidence directly contradicts or refutes the claim, output verdict "Debunked".
-6. If the evidence is contradictory or inconclusive, output verdict "Mixed".
-7. If evidence is sparse, missing, or insufficient to draw a firm conclusion, output verdict "Unverified" or "Insufficient Evidence".
-8. Do NOT expose chain-of-thought or reasoning steps in the output.
-9. Provide a clear, concise summary explaining the verdict for a general consumer audience.
-10. Provide 2 to 4 key bullet points in the "why" field.
-11. Generate a polite, safe, WhatsApp-forwardable correction text in the requested language (${language}). It should clearly state whether the claim is true/false/unverified and give brief rationale so users can share it in group chats.
-12. "confidence" must be an integer between 0 and 100 representing evidence coverage and confidence (NOT truth probability).
+2. Never invent facts, URLs, quotes, dates, statistics, or sources.
+3. Prefer official government sources and reputable fact-check organizations over general web pages.
+4. If evidence directly supports the claim, use "Supported".
+5. If evidence directly contradicts/refutes the claim, use "Debunked".
+6. If evidence conflicts, use "Mixed".
+7. If evidence is sparse or insufficient, use "Unverified" or "Insufficient Evidence".
+8. Do not expose chain-of-thought.
+9. Keep the summary concise and consumer-friendly.
+10. Give 2 to 4 concise reasons in "why".
+11. Generate a safe WhatsApp-forwardable correction in the requested language.
+12. "confidence" is evidence coverage/confidence from 0 to 100, NOT truth probability.
 
-Respond ONLY with strict JSON in this exact structure:
+Return ONLY valid JSON:
 {
   "verdict": "Supported" | "Debunked" | "Mixed" | "Unverified" | "Insufficient Evidence",
   "confidence": 85,
-  "summary": "Clear concise explanation of the verdict.",
+  "summary": "Clear concise explanation.",
   "why": ["Key point 1", "Key point 2"],
   "evidence": [
     {
       "sourceId": "S1",
       "stance": "supports" | "contradicts" | "context",
-      "point": "Brief explanation of how this source relates to the claim."
+      "point": "Brief evidence relationship."
     }
   ],
   "correction": "WhatsApp-forwardable text..."
 }`;
 
-  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${geminiKey}`;
+  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent`;
 
-  const response = await fetch(geminiUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: {
-        responseMimeType: "application/json",
-      },
-    }),
+  const body = JSON.stringify({
+    contents: [{ parts: [{ text: prompt }] }],
+    generationConfig: {
+      responseMimeType: "application/json",
+      temperature: 0.1,
+    },
   });
 
-  if (!response.ok) {
-    const errText = await response.text();
-    logger.error({ status: response.status, body: errText }, "Gemini API error");
-    throw new Error(`Gemini API returned status ${response.status}`);
-  }
+  const response = await requestGemini(geminiUrl, body, geminiKey);
+  const data = (await response.json()) as {
+    candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+  };
 
-  const data = (await response.json()) as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
   const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
-
   if (!rawText) {
-    throw new Error("Gemini API returned an empty response.");
+    throw new VerificationError(
+      "The AI verification service returned an empty response. Please try again.",
+      502,
+      "GEMINI_EMPTY_RESPONSE",
+    );
   }
 
-  // Clean potential markdown backticks
-  const cleanedText = rawText.replace(/^```json\s*/i, "").replace(/\s*```$/i, "").trim();
-  const parsed = JSON.parse(cleanedText);
+  const cleanedText = rawText
+    .replace(/^\s*```json\s*/i, "")
+    .replace(/\s*```\s*$/i, "")
+    .trim();
 
-  // Fallback defaults for safety
-  const validVerdicts = ["Supported", "Debunked", "Mixed", "Unverified", "Insufficient Evidence"];
-  const verdict = validVerdicts.includes(parsed.verdict) ? parsed.verdict : "Unverified";
-  const confidence = typeof parsed.confidence === "number" ? Math.min(100, Math.max(0, Math.round(parsed.confidence))) : 50;
+  let parsed: any;
+  try {
+    parsed = JSON.parse(cleanedText);
+  } catch {
+    throw new VerificationError(
+      "The AI verification service returned an invalid response. Please try again.",
+      502,
+      "GEMINI_INVALID_JSON",
+    );
+  }
+
+  const validVerdicts = [
+    "Supported",
+    "Debunked",
+    "Mixed",
+    "Unverified",
+    "Insufficient Evidence",
+  ];
+
+  if (!validVerdicts.includes(parsed.verdict)) {
+    throw new VerificationError(
+      "The AI verification service returned an invalid verdict. Please try again.",
+      502,
+      "GEMINI_INVALID_RESULT",
+    );
+  }
+
+  if (
+    typeof parsed.confidence !== "number" ||
+    !Number.isFinite(parsed.confidence) ||
+    !Array.isArray(parsed.why) ||
+    parsed.why.length === 0 ||
+    !Array.isArray(parsed.evidence) ||
+    typeof parsed.summary !== "string" ||
+    typeof parsed.correction !== "string"
+  ) {
+    throw new VerificationError(
+      "The AI verification service returned incomplete verification data. Please try again.",
+      502,
+      "GEMINI_INCOMPLETE_RESULT",
+    );
+  }
 
   return {
-    verdict,
-    confidence,
-    summary: parsed.summary || "Verification complete based on available evidence.",
-    why: Array.isArray(parsed.why) && parsed.why.length > 0 ? parsed.why : ["Evidence evaluation completed."],
-    evidence: Array.isArray(parsed.evidence) ? parsed.evidence : [],
-    correction: parsed.correction || `*ForwardCheck Verification*\n\nClaim: ${claim}\nVerdict: ${verdict}\n\nPlease check verified sources before forwarding.`,
+    verdict: parsed.verdict,
+    confidence: Math.min(100, Math.max(0, Math.round(parsed.confidence))),
+    summary: parsed.summary,
+    why: parsed.why.slice(0, 4),
+    evidence: parsed.evidence,
+    correction: parsed.correction,
   };
 }
 
 router.post("/verify", async (req, res) => {
+  const startedAt = Date.now();
+
   try {
     const parseResult = VerifyClaimBody.safeParse(req.body);
     if (!parseResult.success) {
       return res.status(400).json({
         error: "Invalid input. Claim must be between 8 and 1500 characters.",
+        code: "INVALID_INPUT",
       });
     }
 
@@ -249,6 +473,7 @@ router.post("/verify", async (req, res) => {
     if (trimmedClaim.length < 8 || trimmedClaim.length > 1500) {
       return res.status(400).json({
         error: "Claim must be between 8 and 1500 characters.",
+        code: "INVALID_INPUT",
       });
     }
 
@@ -256,38 +481,65 @@ router.post("/verify", async (req, res) => {
     const geminiApiKey = process.env.GEMINI_API_KEY;
     const geminiModel = process.env.GEMINI_MODEL || "gemini-3.6-flash";
 
+    logger.info({ claimLength: trimmedClaim.length }, "[VERIFY] claim received");
+
     if (!serpApiKey) {
       return res.status(500).json({
-        error: "Backend configuration error: SERPAPI_KEY is not set. Please configure the SerpApi API key in environment variables.",
+        error: "Verification service is not configured correctly.",
+        code: "SERPAPI_CONFIG",
       });
     }
 
     if (!geminiApiKey) {
       return res.status(500).json({
-        error: "Backend configuration error: GEMINI_API_KEY is not set. Please configure the Gemini API key in environment variables.",
+        error: "Verification service authentication is not configured correctly.",
+        code: "GEMINI_CONFIG",
       });
     }
 
-    // Map language
     let langLabel = "English";
     if (language === "hi" || language === "Hindi") langLabel = "Hindi";
     if (language === "mr" || language === "Marathi") langLabel = "Marathi";
 
-    // 1. Fetch live evidence using SerpApi
     const sources = await fetchSerpApiResults(trimmedClaim, serpApiKey);
+    logger.info({ count: sources.length }, "[VERIFY] evidence count");
 
-    // 2. Evaluate with Gemini
-    const evaluation = await callGemini(trimmedClaim, langLabel, sources, geminiApiKey, geminiModel);
+    const evaluation = await callGemini(
+      trimmedClaim,
+      langLabel,
+      sources,
+      geminiApiKey,
+      geminiModel,
+    );
 
-    // 3. Return structured response
+    logger.info(
+      { elapsedMs: Date.now() - startedAt, model: geminiModel },
+      "[VERIFY] verification completed",
+    );
+
     return res.json({
       ...evaluation,
       sources,
     });
   } catch (err) {
-    logger.error({ err }, "Error processing verification request");
+    if (err instanceof VerificationError) {
+      logger.error(
+        { code: err.code, status: err.statusCode, elapsedMs: Date.now() - startedAt },
+        "[VERIFY] verification failed",
+      );
+      return res.status(err.statusCode).json({
+        error: err.message,
+        code: err.code,
+      });
+    }
+
+    logger.error(
+      { err, elapsedMs: Date.now() - startedAt },
+      "[VERIFY] unexpected verification error",
+    );
     return res.status(500).json({
-      error: err instanceof Error ? err.message : "An unexpected server error occurred during verification.",
+      error: "An unexpected verification error occurred. Please try again.",
+      code: "VERIFY_UNEXPECTED",
     });
   }
 });
