@@ -34,6 +34,30 @@ app.use(express.urlencoded({ extended: true }));
 
 app.use("/api", router);
 
+// API routes must always return JSON. Without this guard, an unmatched API
+// request falls through to Express's default HTML error page, which makes
+// the frontend fail with "Unexpected token '<'".
+app.use("/api", (req, res) => {
+  res.status(404).json({
+    error: `API route not found: ${req.method} ${req.path}`,
+    code: "API_ROUTE_NOT_FOUND",
+  });
+});
+
+// Final API error handler: never leak an HTML error response to the client.
+app.use((err: unknown, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (req.path.startsWith("/api")) {
+    logger.error({ err, method: req.method, path: req.path }, "API request failed");
+    if (!res.headersSent) {
+      return res.status(500).json({
+        error: "The verification server encountered an unexpected error. Please try again.",
+        code: "API_INTERNAL_ERROR",
+      });
+    }
+  }
+  next(err);
+});
+
 function getModuleDir(): string {
   try {
     return path.dirname(fileURLToPath(import.meta.url));
