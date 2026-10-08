@@ -198,18 +198,27 @@ function Home() {
     setCurrentStageIndex(0);
 
     const interval = window.setInterval(() => {
-      setCurrentStageIndex((prev) => (prev + 1) % verificationStages.length);
+      setCurrentStageIndex((prev) => Math.min(prev + 1, verificationStages.length - 1));
     }, 700);
 
     try {
-      const response = await fetch("/api/verify", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          claim: trimmed,
-          language: langCodeMap[language],
-        }),
-      });
+      const controller = new AbortController();
+      const requestTimeout = window.setTimeout(() => controller.abort(), 45000);
+
+      let response: Response;
+      try {
+        response = await fetch("/api/verify", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            claim: trimmed,
+            language: langCodeMap[language],
+          }),
+          signal: controller.signal,
+        });
+      } finally {
+        window.clearTimeout(requestTimeout);
+      }
 
       const data = await response.json();
 
@@ -219,11 +228,15 @@ function Home() {
 
       setResult(data as VerifyResult);
     } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : "Verification service experienced an error. Please try again."
-      );
+      if (err instanceof DOMException && err.name === "AbortError") {
+        setError("Verification is taking longer than expected. Please try again.");
+      } else {
+        setError(
+          err instanceof Error
+            ? err.message
+            : "Verification service experienced an error. Please try again."
+        );
+      }
     } finally {
       window.clearInterval(interval);
       setLoading(false);
