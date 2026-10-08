@@ -1,4 +1,4 @@
-import { type CSSProperties, type ReactNode, useMemo, useState } from "react";
+import { type CSSProperties, useMemo, useState } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { Toaster } from "@/components/ui/toaster";
@@ -7,311 +7,757 @@ import NotFound from "@/pages/not-found";
 import {
   ArrowRight,
   Check,
-  ChevronDown,
-  Clipboard,
+  CheckCircle2,
+  ChevronRight,
+  Copy,
   ExternalLink,
-  FileCheck2,
-  Globe2,
-  LockKeyhole,
+  FileText,
+  Globe,
+  HelpCircle,
+  Info,
+  Loader2,
   MessageCircle,
-  MessageSquareText,
+  MessageSquare,
   Newspaper,
   RotateCcw,
   Search,
   ShieldCheck,
   Sparkles,
   X,
+  XCircle,
+  AlertTriangle,
+  Network,
 } from "lucide-react";
 import { Route, Switch, useLocation, Router as WouterRouter } from "wouter";
 
 const queryClient = new QueryClient();
 
-type Language = "English" | "Hindi" | "Marathi";
-type Source = {
+export type Language = "English" | "Hindi" | "Marathi";
+
+export type SourceKind = "official" | "fact-check" | "news" | "web";
+
+export type Source = {
   id: string;
   title: string;
   url: string;
   snippet: string;
   source: string;
   date?: string;
-  kind: "official" | "fact-check" | "news" | "web";
+  kind: SourceKind;
 };
-type Evidence = {
+
+export type EvidenceItem = {
   sourceId: string;
   stance: "supports" | "contradicts" | "context";
   point: string;
 };
-type VerifyResult = {
+
+export type VerifyResult = {
   verdict: "Supported" | "Debunked" | "Mixed" | "Unverified" | "Insufficient Evidence";
   confidence: number;
   summary: string;
   why: string[];
-  evidence: Evidence[];
+  evidence: EvidenceItem[];
   correction: string;
   sources: Source[];
 };
 
-const examples = [
-  { label: "Government grant", claim: "A message says every student can claim a guaranteed government grant by sharing their bank details." },
-  { label: "Health claim", claim: "A forwarded post claims drinking warm water cures every viral infection overnight." },
-  { label: "School closure", claim: "A viral message says schools across the country are closed tomorrow. Please share widely." },
-  { label: "History fact", claim: "The national flag of India was adopted on 22 July 1947." },
+const sampleClaims = [
+  {
+    label: "Government Student Grant",
+    claim: "A viral WhatsApp message claims every Indian student can get ₹50,000 direct bank grant by registering on a link.",
+  },
+  {
+    label: "Health / Medical Claim",
+    claim: "A forwarded post claims drinking warm lemon water cures all viral infections overnight without medication.",
+  },
+  {
+    label: "School Closure Rumor",
+    claim: "A message says all schools and colleges in India will remain closed for the next two weeks due to emergency directive.",
+  },
+  {
+    label: "Historical Fact",
+    claim: "The National Flag of India was adopted by the Constituent Assembly on 22 July 1947.",
+  },
 ];
 
-const stages = [
+const verificationStages = [
   "Understanding the claim",
   "Searching the live web",
   "Checking recent news",
-  "Checking official & fact-check sources",
+  "Checking official sources",
+  "Checking fact-check sources",
   "Comparing evidence",
 ];
 
-const verdictMeta: Record<VerifyResult["verdict"], { label: string; icon: typeof ShieldCheck }> = {
-  Supported: { label: "Supported by available evidence", icon: ShieldCheck },
-  Debunked: { label: "Evidence contradicts this claim", icon: X },
-  Mixed: { label: "The evidence is mixed", icon: RotateCcw },
-  Unverified: { label: "Not enough reliable evidence", icon: Search },
-  "Insufficient Evidence": { label: "Insufficient evidence to conclude", icon: Search },
+const verdictConfig: Record<
+  VerifyResult["verdict"],
+  {
+    label: string;
+    sublabel: string;
+    icon: typeof ShieldCheck;
+    colorClass: string;
+    badgeBg: string;
+  }
+> = {
+  Supported: {
+    label: "SUPPORTED",
+    sublabel: "Available live web evidence strongly supports this claim.",
+    icon: CheckCircle2,
+    colorClass: "verdict-supported",
+    badgeBg: "#e8f5e9",
+  },
+  Debunked: {
+    label: "DEBUNKED",
+    sublabel: "Official or credible evidence contradicts this claim.",
+    icon: XCircle,
+    colorClass: "verdict-debunked",
+    badgeBg: "#ffebee",
+  },
+  Mixed: {
+    label: "MIXED EVIDENCE",
+    sublabel: "Retrieved evidence presents conflicting or partial reports.",
+    icon: AlertTriangle,
+    colorClass: "verdict-mixed",
+    badgeBg: "#fff8e1",
+  },
+  Unverified: {
+    label: "UNVERIFIED",
+    sublabel: "Insufficient authoritative sources exist to confirm or refute.",
+    icon: HelpCircle,
+    colorClass: "verdict-unverified",
+    badgeBg: "#f5f5f5",
+  },
+  "Insufficient Evidence": {
+    label: "INSUFFICIENT EVIDENCE",
+    sublabel: "Not enough reliable evidence was found on the live web.",
+    icon: HelpCircle,
+    colorClass: "verdict-unverified",
+    badgeBg: "#f5f5f5",
+  },
 };
 
 function Home() {
   const [claim, setClaim] = useState("");
   const [language, setLanguage] = useState<Language>("English");
-  const [howOpen, setHowOpen] = useState(false);
+  const [howItWorksOpen, setHowItWorksOpen] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [stage, setStage] = useState(0);
+  const [currentStageIndex, setCurrentStageIndex] = useState(0);
   const [result, setResult] = useState<VerifyResult | null>(null);
-  const [error, setError] = useState("");
+  const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [activeTab, setActiveTab] = useState<"all" | "official" | "fact-check" | "news">("all");
 
-  const evidenceBySource = useMemo(() => {
-    const map = new Map<string, Evidence>();
-    result?.evidence.forEach((item) => map.set(item.sourceId, item));
+  const evidenceBySourceId = useMemo(() => {
+    const map = new Map<string, EvidenceItem>();
+    if (result?.evidence) {
+      for (const item of result.evidence) {
+        map.set(item.sourceId, item);
+      }
+    }
     return map;
   }, [result]);
 
-  async function verify() {
-    if (!claim.trim() || loading) return;
+  const filteredSources = useMemo(() => {
+    if (!result?.sources) return [];
+    if (activeTab === "all") return result.sources;
+    return result.sources.filter((s) => s.kind === activeTab);
+  }, [result, activeTab]);
+
+  const networkCounts = useMemo(() => {
+    if (!result?.sources) return { official: 0, news: 0, factCheck: 0, web: 0 };
+    return {
+      official: result.sources.filter((s) => s.kind === "official").length,
+      news: result.sources.filter((s) => s.kind === "news").length,
+      factCheck: result.sources.filter((s) => s.kind === "fact-check").length,
+      web: result.sources.filter((s) => s.kind === "web").length,
+    };
+  }, [result]);
+
+  const langCodeMap: Record<Language, string> = {
+    English: "en",
+    Hindi: "hi",
+    Marathi: "mr",
+  };
+
+  async function handleVerify() {
+    const trimmed = claim.trim();
+    if (!trimmed || loading) return;
+
+    if (trimmed.length < 8) {
+      setError("Please enter a claim with at least 8 characters.");
+      return;
+    }
+
     setLoading(true);
     setResult(null);
-    setError("");
+    setError(null);
     setCopied(false);
-    setStage(0);
+    setCurrentStageIndex(0);
 
-    const timer = window.setInterval(() => setStage((current) => (current + 1) % stages.length), 850);
+    const interval = window.setInterval(() => {
+      setCurrentStageIndex((prev) => (prev + 1) % verificationStages.length);
+    }, 700);
 
     try {
       const response = await fetch("/api/verify", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ claim: claim.trim(), language }),
+        body: JSON.stringify({
+          claim: trimmed,
+          language: langCodeMap[language],
+        }),
       });
+
       const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Verification failed.");
+
+      if (!response.ok) {
+        throw new Error(data.error || "Verification failed.");
+      }
+
       setResult(data as VerifyResult);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Verification failed. Please try again.");
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Verification service experienced an error. Please try again."
+      );
     } finally {
-      window.clearInterval(timer);
+      window.clearInterval(interval);
       setLoading(false);
     }
   }
 
-  async function copyCorrection() {
-    if (!result) return;
-    await navigator.clipboard.writeText(result.correction);
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1800);
+  async function handleCopyCorrection() {
+    if (!result?.correction) return;
+    try {
+      await navigator.clipboard.writeText(result.correction);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // fallback copy
+    }
   }
 
-  function shareWhatsApp() {
-    if (!result) return;
-    window.open(`https://wa.me/?text=${encodeURIComponent(result.correction)}`, "_blank", "noopener,noreferrer");
+  function handleShareWhatsApp() {
+    if (!result?.correction) return;
+    const text = encodeURIComponent(result.correction);
+    window.open(`https://wa.me/?text=${text}`, "_blank", "noopener,noreferrer");
   }
 
   return (
-    <div className="fc-page">
-      <div className="fc-grid" aria-hidden="true" />
-      <div className="fc-orbit fc-orbit-one" aria-hidden="true" />
-      <div className="fc-orbit fc-orbit-two" aria-hidden="true" />
-      <div className="fc-shell">
-        <header className="fc-header">
-          <div className="fc-brand">
-            <span className="fc-brand-mark"><ShieldCheck size={15} /></span>
-            <span className="fc-brand-name">Forward<span>Check</span></span>
+    <div className="fc-app-shell">
+      {/* Background Orbits & Grid */}
+      <div className="fc-bg-grid" aria-hidden="true" />
+      <div className="fc-bg-orbit fc-orbit-1" aria-hidden="true" />
+      <div className="fc-bg-orbit fc-orbit-2" aria-hidden="true" />
+
+      <div className="fc-container">
+        {/* Navigation Header */}
+        <header className="fc-navbar">
+          <div className="fc-brand-group">
+            <div className="fc-logo-badge">
+              <ShieldCheck size={18} className="fc-logo-icon" />
+            </div>
+            <div className="fc-brand-title">
+              Forward<span className="fc-brand-accent">Check</span>
+            </div>
           </div>
-          <div className="fc-header-right">
-            <span className="fc-live-dot"><span /> Live evidence</span>
-            <button className="fc-how" type="button" onClick={() => setHowOpen(true)}>
-              HOW IT WORKS <ChevronDown size={13} />
+
+          <div className="fc-nav-actions">
+            <div className="fc-lang-picker">
+              {(["English", "Hindi", "Marathi"] as Language[]).map((lang) => (
+                <button
+                  key={lang}
+                  type="button"
+                  className={`fc-lang-btn ${language === lang ? "active" : ""}`}
+                  onClick={() => setLanguage(lang)}
+                >
+                  {lang === "Hindi" ? "हिन्दी" : lang === "Marathi" ? "मराठी" : "EN"}
+                </button>
+              ))}
+            </div>
+
+            <button
+              type="button"
+              className="fc-how-btn"
+              onClick={() => setHowItWorksOpen(true)}
+            >
+              <Info size={14} />
+              <span>How it works</span>
             </button>
           </div>
         </header>
 
-        {howOpen && (
-          <div className="fc-modal-backdrop" onClick={() => setHowOpen(false)}>
-            <section className="fc-modal" onClick={(event) => event.stopPropagation()}>
-              <button className="fc-modal-close" onClick={() => setHowOpen(false)} aria-label="Close"><X size={16} /></button>
-              <div className="fc-modal-icon"><Sparkles size={18} /></div>
-              <p className="fc-kicker">Evidence-first</p>
-              <h2>A pause before the forward.</h2>
-              <p>ForwardCheck searches current web and news results, prioritises official and reputable sources, then uses AI to compare the evidence. It does not invent citations or treat uncertainty as a fact.</p>
-              <div className="fc-modal-steps">
-                {["Search current evidence", "Compare credible sources", "Explain the result"].map((item, index) => (
-                  <div key={item}><b>0{index + 1}</b><span>{item}</span></div>
-                ))}
+        {/* How It Works Modal */}
+        {howItWorksOpen && (
+          <div
+            className="fc-modal-overlay"
+            onClick={() => setHowItWorksOpen(false)}
+          >
+            <div
+              className="fc-modal-card"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <button
+                type="button"
+                className="fc-modal-close-btn"
+                onClick={() => setHowItWorksOpen(false)}
+                aria-label="Close"
+              >
+                <X size={18} />
+              </button>
+
+              <div className="fc-modal-badge">
+                <Sparkles size={16} />
+                <span>Evidence-First Protocol</span>
               </div>
-            </section>
+
+              <h2>How ForwardCheck Works</h2>
+              <p className="fc-modal-desc">
+                ForwardCheck performs real-time internet verification using live Google Search, Google News, official government domain registries, and India fact-check databases.
+              </p>
+
+              <div className="fc-modal-steps-list">
+                <div className="fc-step-item">
+                  <div className="fc-step-num">01</div>
+                  <div className="fc-step-content">
+                    <h4>Paste Viral Claim</h4>
+                    <p>Enter any forwarded WhatsApp message, news rumor, or social media post.</p>
+                  </div>
+                </div>
+
+                <div className="fc-step-item">
+                  <div className="fc-step-num">02</div>
+                  <div className="fc-step-content">
+                    <h4>Live SerpApi Search</h4>
+                    <p>We query live web evidence across official portals (.gov.in, PIB), news, and fact-check archives.</p>
+                  </div>
+                </div>
+
+                <div className="fc-step-item">
+                  <div className="fc-step-num">03</div>
+                  <div className="fc-step-content">
+                    <h4>AI Gemini Synthesis</h4>
+                    <p>Gemini strictly evaluates only the retrieved evidence and surfaces consensus or conflicts.</p>
+                  </div>
+                </div>
+
+                <div className="fc-step-item">
+                  <div className="fc-step-num">04</div>
+                  <div className="fc-step-content">
+                    <h4>Shareable Correction</h4>
+                    <p>Get a friendly, pre-formatted WhatsApp correction to post straight into group chats.</p>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         )}
 
-        <main className="fc-main">
+        {/* Main Body Area */}
+        <main className="fc-main-content">
+          {/* SEARCH CONSOLE STATE */}
           {!result && !loading && (
-            <>
-              <div className="fc-hero">
-                <div className="fc-eyebrow"><span /> A pause before the forward <span /></div>
-                <h1>Stop. Search. <em>Verify.</em><br /><strong>Before You Forward.</strong></h1>
-                <p>A message landed in your group chat. Check what the evidence says before you pass it on.</p>
+            <div className="fc-hero-section">
+              <div className="fc-hero-tag">
+                <span className="fc-dot-pulse" />
+                <span>A pause before the forward</span>
               </div>
 
-              <section className="fc-console">
-                <div className="fc-console-head">
-                  <label htmlFor="claim-input"><MessageSquareText size={15} /> What did you receive?</label>
-                  <span><LockKeyhole size={12} /> Nothing is posted or shared</span>
-                </div>
-                <textarea
-                  id="claim-input"
-                  value={claim}
-                  maxLength={1500}
-                  onChange={(event) => setClaim(event.target.value)}
-                  placeholder="Paste the forwarded message here..."
-                />
-                <div className="fc-console-meta"><span>A sentence is enough. Add context if you have it.</span><b>{claim.length.toLocaleString()} / 1,500</b></div>
+              <h1 className="fc-hero-headline">
+                Stop. Search. <span className="fc-accent-text">Verify.</span>
+                <br />
+                Before You Forward.
+              </h1>
 
-                <div className="fc-console-row">
-                  <div className="fc-languages" role="group" aria-label="Response language">
-                    {(["English", "Hindi", "Marathi"] as Language[]).map((item) => (
-                      <button key={item} type="button" aria-pressed={language === item} onClick={() => setLanguage(item)}>
-                        {item === "Hindi" ? "हिन्दी" : item === "Marathi" ? "मराठी" : item}
+              <p className="fc-hero-subtext">
+                Check viral WhatsApp messages and social media claims against live official government sources, press bureaus, and verified fact-checkers.
+              </p>
+
+              {/* Console Input Card */}
+              <div className="fc-console-card">
+                <div className="fc-console-header">
+                  <div className="fc-console-title">
+                    <MessageSquare size={16} className="fc-icon-green" />
+                    <span>Paste forwarded text or claim</span>
+                  </div>
+                  <div className="fc-console-limit">
+                    {claim.length} / 1,500
+                  </div>
+                </div>
+
+                <textarea
+                  className="fc-claim-textarea"
+                  value={claim}
+                  onChange={(e) => setClaim(e.target.value)}
+                  maxLength={1500}
+                  placeholder="Paste a viral WhatsApp message, social post, or claim here..."
+                  rows={4}
+                />
+
+                <div className="fc-console-footer">
+                  <div className="fc-console-lang-picker">
+                    <span className="fc-lang-label">Response language:</span>
+                    {(["English", "Hindi", "Marathi"] as Language[]).map((lang) => (
+                      <button
+                        key={lang}
+                        type="button"
+                        className={`fc-lang-chip ${language === lang ? "active" : ""}`}
+                        onClick={() => setLanguage(lang)}
+                      >
+                        {lang === "Hindi" ? "हिन्दी" : lang === "Marathi" ? "मराठी" : lang}
                       </button>
                     ))}
                   </div>
-                  <span className="fc-evidence-badge"><ShieldCheck size={12} /> Evidence-led</span>
+
+                  <button
+                    type="button"
+                    className="fc-verify-btn"
+                    onClick={handleVerify}
+                    disabled={!claim.trim() || claim.trim().length < 8}
+                  >
+                    <span>Verify with live evidence</span>
+                    <ArrowRight size={16} />
+                  </button>
                 </div>
 
-                <button className="fc-verify" type="button" onClick={verify} disabled={!claim.trim()}>
-                  <span>VERIFY THIS CLAIM</span><ArrowRight size={17} />
-                </button>
-
-                <div className="fc-examples">
-                  <span>Try an example</span>
-                  {examples.map((item) => (
-                    <button key={item.label} type="button" onClick={() => setClaim(item.claim)}>{item.label}</button>
-                  ))}
-                </div>
-              </section>
-            </>
-          )}
-
-          {loading && (
-            <section className="fc-loading">
-              <div className="fc-scan-ring"><Search size={26} /></div>
-              <p className="fc-kicker">LIVE VERIFICATION</p>
-              <h2>Following the evidence.</h2>
-              <p className="fc-loading-claim">“{claim}”</p>
-              <div className="fc-stage-list">
-                {stages.map((item, index) => (
-                  <div key={item} className={index === stage ? "active" : index < stage ? "done" : ""}>
-                    <span>{index < stage ? <Check size={12} /> : index + 1}</span><b>{item}</b>
+                {/* Example Claims */}
+                <div className="fc-examples-group">
+                  <span className="fc-examples-label">Try an example:</span>
+                  <div className="fc-examples-chips">
+                    {sampleClaims.map((item) => (
+                      <button
+                        key={item.label}
+                        type="button"
+                        className="fc-example-chip"
+                        onClick={() => setClaim(item.claim)}
+                      >
+                        {item.label}
+                      </button>
+                    ))}
                   </div>
-                ))}
+                </div>
               </div>
-              <div className="fc-loading-foot"><span>SerpApi</span><span>→</span><span>Google Search</span><span>+</span><span>Google News</span><span>+</span><span>Official sources</span></div>
-            </section>
+            </div>
           )}
 
+          {/* LOADING VERIFICATION STAGE */}
+          {loading && (
+            <div className="fc-loading-section">
+              <div className="fc-loader-ring">
+                <Loader2 size={32} className="fc-spinner-icon" />
+              </div>
+
+              <div className="fc-loading-tag font-mono">LIVE EVIDENTIAL SCAN</div>
+              <h2 className="fc-loading-title">Verifying against live web...</h2>
+
+              <div className="fc-loading-claim-quote">
+                “{claim}”
+              </div>
+
+              <div className="fc-stages-timeline">
+                {verificationStages.map((stageText, idx) => {
+                  const isDone = idx < currentStageIndex;
+                  const isActive = idx === currentStageIndex;
+                  return (
+                    <div
+                      key={stageText}
+                      className={`fc-timeline-step ${isActive ? "active" : isDone ? "done" : ""}`}
+                    >
+                      <div className="fc-step-indicator">
+                        {isDone ? (
+                          <Check size={12} />
+                        ) : (
+                          <span>{idx + 1}</span>
+                        )}
+                      </div>
+                      <span className="fc-step-label">{stageText}</span>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div className="fc-loading-source-badges">
+                <span>SerpApi</span>
+                <span>•</span>
+                <span>Google Search</span>
+                <span>•</span>
+                <span>Google News</span>
+                <span>•</span>
+                <span>PIB & .gov.in</span>
+              </div>
+            </div>
+          )}
+
+          {/* RESULTS STATE */}
           {result && !loading && (
-            <section className="fc-results">
-              <button className="fc-back" type="button" onClick={() => setResult(null)}><ArrowRight size={14} className="flip" /> Check another claim</button>
+            <div className="fc-results-section">
+              <button
+                type="button"
+                className="fc-back-btn"
+                onClick={() => setResult(null)}
+              >
+                <RotateCcw size={14} />
+                <span>Verify another claim</span>
+              </button>
 
-              <div className={`fc-verdict fc-verdict-${result.verdict.toLowerCase().replace(/\s+/g, "-")}`}>
-                <div className="fc-verdict-icon">{(() => { const Icon = verdictMeta[result.verdict].icon; return <Icon size={24} />; })()}</div>
-                <div>
-                  <p className="fc-kicker">VERDICT</p>
-                  <h1>{result.verdict}</h1>
-                  <p>{verdictMeta[result.verdict].label}</p>
-                </div>
-                <div className="fc-score">
-                  <div className="fc-score-ring" style={{ "--score": result.confidence } as CSSProperties}><strong>{result.confidence}</strong><span>%</span></div>
-                  <small>evidence<br />coverage</small>
-                </div>
-              </div>
+              {/* Main Verdict Card */}
+              {(() => {
+                const config = verdictConfig[result.verdict] || verdictConfig["Unverified"];
+                const VerdictIcon = config.icon;
+                return (
+                  <div className={`fc-verdict-banner ${config.colorClass}`}>
+                    <div className="fc-verdict-left">
+                      <div className="fc-verdict-icon-box">
+                        <VerdictIcon size={28} />
+                      </div>
+                      <div>
+                        <div className="fc-verdict-eyebrow">VERDICT</div>
+                        <h1 className="fc-verdict-heading">{config.label}</h1>
+                        <p className="fc-verdict-sublabel">{config.sublabel}</p>
+                      </div>
+                    </div>
 
-              <div className="fc-result-grid">
-                <div className="fc-result-main">
-                  <article className="fc-panel fc-summary">
-                    <div className="fc-panel-label"><FileCheck2 size={14} /> What the evidence says</div>
-                    <h2>{result.summary}</h2>
-                    <div className="fc-why">
+                    <div className="fc-verdict-right">
+                      <div className="fc-confidence-meter">
+                        <svg className="fc-meter-svg" viewBox="0 0 36 36">
+                          <path
+                            className="fc-meter-bg"
+                            d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                          />
+                          <path
+                            className="fc-meter-fill"
+                            strokeDasharray={`${result.confidence}, 100`}
+                            d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                          />
+                        </svg>
+                        <div className="fc-meter-val">
+                          <span>{result.confidence}%</span>
+                        </div>
+                      </div>
+                      <div className="fc-meter-caption">
+                        Evidence<br />Confidence
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Results Grid */}
+              <div className="fc-results-grid">
+                {/* Left Column: Summary & Evidence */}
+                <div className="fc-results-left">
+                  {/* Summary Card */}
+                  <div className="fc-card fc-summary-card">
+                    <div className="fc-card-label">
+                      <FileText size={15} />
+                      <span>Summary Explanation</span>
+                    </div>
+                    <p className="fc-summary-text">{result.summary}</p>
+
+                    <div className="fc-why-section">
                       <h3>Why this verdict?</h3>
-                      {result.why.map((item, index) => <div key={index}><Check size={13} /> <span>{item}</span></div>)}
+                      <ul className="fc-why-list">
+                        {result.why.map((reason, i) => (
+                          <li key={i}>
+                            <ChevronRight size={14} className="fc-icon-green" />
+                            <span>{reason}</span>
+                          </li>
+                        ))}
+                      </ul>
                     </div>
-                  </article>
+                  </div>
 
-                  <article className="fc-panel">
-                    <div className="fc-panel-label"><Globe2 size={14} /> Evidence trail <span>{result.sources.length} sources</span></div>
-                    <div className="fc-sources">
-                      {result.sources.map((source) => {
-                        const evidence = evidenceBySource.get(source.id);
-                        return (
-                          <a key={source.id} href={source.url} target="_blank" rel="noreferrer" className="fc-source">
-                            <div className="fc-source-top">
-                              <span className={`fc-source-kind fc-kind-${source.kind}`}>{source.kind.replace("-", " ")}</span>
-                              {source.date && <span>{source.date}</span>}
-                            </div>
-                            <h3>{source.title}</h3>
-                            <p>{source.snippet || "Open source to inspect the full context."}</p>
-                            <div className="fc-source-bottom"><b>{source.source}</b><span>{evidence?.stance || "context"} <ExternalLink size={12} /></span></div>
-                          </a>
-                        );
-                      })}
+                  {/* Evidence Network Card */}
+                  <div className="fc-card fc-network-card">
+                    <div className="fc-card-label">
+                      <Network size={15} />
+                      <span>Evidence Source Coverage</span>
                     </div>
-                  </article>
+
+                    <div className="fc-network-grid">
+                      <div className="fc-network-stat">
+                        <span className="fc-stat-num">{networkCounts.official}</span>
+                        <span className="fc-stat-name">Official (.gov.in)</span>
+                      </div>
+                      <div className="fc-network-stat">
+                        <span className="fc-stat-num">{networkCounts.factCheck}</span>
+                        <span className="fc-stat-name">Fact-Checkers</span>
+                      </div>
+                      <div className="fc-network-stat">
+                        <span className="fc-stat-num">{networkCounts.news}</span>
+                        <span className="fc-stat-name">News Outlets</span>
+                      </div>
+                      <div className="fc-network-stat">
+                        <span className="fc-stat-num">{networkCounts.web}</span>
+                        <span className="fc-stat-name">General Web</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Sources List Card */}
+                  <div className="fc-card fc-sources-card">
+                    <div className="fc-sources-header">
+                      <div className="fc-card-label">
+                        <Globe size={15} />
+                        <span>Retrieved Sources ({result.sources.length})</span>
+                      </div>
+
+                      {/* Source Filters */}
+                      <div className="fc-source-filter-tabs">
+                        <button
+                          type="button"
+                          className={`fc-filter-btn ${activeTab === "all" ? "active" : ""}`}
+                          onClick={() => setActiveTab("all")}
+                        >
+                          All ({result.sources.length})
+                        </button>
+                        <button
+                          type="button"
+                          className={`fc-filter-btn ${activeTab === "official" ? "active" : ""}`}
+                          onClick={() => setActiveTab("official")}
+                        >
+                          Official ({networkCounts.official})
+                        </button>
+                        <button
+                          type="button"
+                          className={`fc-filter-btn ${activeTab === "fact-check" ? "active" : ""}`}
+                          onClick={() => setActiveTab("fact-check")}
+                        >
+                          Fact-Check ({networkCounts.factCheck})
+                        </button>
+                        <button
+                          type="button"
+                          className={`fc-filter-btn ${activeTab === "news" ? "active" : ""}`}
+                          onClick={() => setActiveTab("news")}
+                        >
+                          News ({networkCounts.news})
+                        </button>
+                      </div>
+                    </div>
+
+                    {filteredSources.length === 0 ? (
+                      <div className="fc-empty-sources">
+                        No sources found matching this filter.
+                      </div>
+                    ) : (
+                      <div className="fc-sources-list">
+                        {filteredSources.map((source) => {
+                          const evidenceItem = evidenceBySourceId.get(source.id);
+                          const stance = evidenceItem?.stance || "context";
+
+                          return (
+                            <a
+                              key={source.id}
+                              href={source.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="fc-source-item"
+                            >
+                              <div className="fc-source-item-head">
+                                <div className="fc-source-tags">
+                                  <span className={`fc-kind-badge fc-kind-${source.kind}`}>
+                                    {source.kind.replace("-", " ")}
+                                  </span>
+                                  <span className={`fc-stance-badge fc-stance-${stance}`}>
+                                    {stance}
+                                  </span>
+                                </div>
+                                {source.date && (
+                                  <span className="fc-source-date">{source.date}</span>
+                                )}
+                              </div>
+
+                              <h4 className="fc-source-title">{source.title}</h4>
+                              <p className="fc-source-snippet">
+                                {source.snippet || "Click to inspect the full source context."}
+                              </p>
+
+                              <div className="fc-source-foot">
+                                <span className="fc-source-domain">{source.source}</span>
+                                <span className="fc-source-link-action">
+                                  <span>Open link</span>
+                                  <ExternalLink size={12} />
+                                </span>
+                              </div>
+                            </a>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
                 </div>
 
-                <aside className="fc-result-side">
-                  <article className="fc-panel fc-correction">
-                    <div className="fc-panel-label"><MessageCircle size={14} /> Shareable correction</div>
-                    <p>{result.correction}</p>
-                    <button type="button" onClick={copyCorrection}><Clipboard size={14} /> {copied ? "Copied" : "Copy correction"}</button>
-                    <button type="button" className="fc-whatsapp" onClick={shareWhatsApp}><MessageCircle size={14} /> Share on WhatsApp</button>
-                  </article>
+                {/* Right Column: Shareable Correction */}
+                <div className="fc-results-right">
+                  <div className="fc-card fc-correction-card">
+                    <div className="fc-correction-header">
+                      <MessageCircle size={18} />
+                      <span>Shareable Correction</span>
+                    </div>
 
-                  <article className="fc-panel fc-method">
-                    <div className="fc-panel-label"><Newspaper size={14} /> Search coverage</div>
-                    <div><span>Google web</span><b>{result.sources.filter((s) => s.kind === "web" || s.kind === "official" || s.kind === "fact-check").length}</b></div>
-                    <div><span>Google News</span><b>{result.sources.filter((s) => s.kind === "news").length}</b></div>
-                    <div><span>Official / fact-check</span><b>{result.sources.filter((s) => s.kind === "official" || s.kind === "fact-check").length}</b></div>
-                  </article>
-                </aside>
+                    <p className="fc-correction-subtext">
+                      Copy this polite, verified response to paste into WhatsApp group chats:
+                    </p>
+
+                    <div className="fc-correction-box font-sans">
+                      {result.correction}
+                    </div>
+
+                    <div className="fc-correction-actions">
+                      <button
+                        type="button"
+                        className="fc-btn-copy"
+                        onClick={handleCopyCorrection}
+                      >
+                        <Copy size={14} />
+                        <span>{copied ? "Copied!" : "Copy Correction"}</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        className="fc-btn-whatsapp"
+                        onClick={handleShareWhatsApp}
+                      >
+                        <MessageCircle size={14} />
+                        <span>Share on WhatsApp</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
               </div>
-            </section>
+            </div>
           )}
 
+          {/* ERROR STATE */}
           {error && !loading && (
-            <div className="fc-error" role="alert">
-              <div><b>Verification couldn't complete.</b><span>{error}</span></div>
-              <button type="button" onClick={verify}>Try again</button>
+            <div className="fc-error-card">
+              <AlertTriangle size={20} className="fc-error-icon" />
+              <div className="fc-error-text">
+                <strong>Verification Failed</strong>
+                <p>{error}</p>
+              </div>
+              <button
+                type="button"
+                className="fc-error-retry-btn"
+                onClick={handleVerify}
+              >
+                Try Again
+              </button>
             </div>
           )}
         </main>
 
-        {!result && !loading && (
-          <footer className="fc-footer">
-            <span><b>ForwardCheck.</b> Evidence before forwarding.</span>
-            <span>SerpApi × Gemini · Public-interest tool</span>
-          </footer>
-        )}
+        {/* Footer */}
+        <footer className="fc-footer font-sans">
+          <div className="fc-footer-disclaimer">
+            ForwardCheck uses live internet evidence. Results depend on available sources and should be treated as evidence-based assistance, not absolute truth.
+          </div>
+          <div className="fc-footer-copyright">
+            © {new Date().getFullYear()} ForwardCheck • Evidence-First Verification Platform
+          </div>
+        </footer>
       </div>
     </div>
   );
@@ -328,7 +774,7 @@ function Router() {
   );
 }
 
-function RoutedErrorBoundary({ children }: { children: ReactNode }) {
+function RoutedErrorBoundary({ children }: { children: React.ReactNode }) {
   const [location] = useLocation();
   return <ErrorBoundary resetKey={location}>{children}</ErrorBoundary>;
 }

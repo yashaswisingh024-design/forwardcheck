@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: forwardcheck
+    env: node
+    region: singapore
+    plan: free
+    buildCommand: pnpm install --frozen-lockfile && pnpm --filter @workspace/forwardcheck build && pnpm --filter @workspace/api-server build
+    startCommand: pnpm --filter @workspace/api-server start
+    healthCheckPath: /api/healthz
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: BASE_PATH
+        value: /
+      - key: GEMINI_MODEL
+        value: gemini-3.6-flash
