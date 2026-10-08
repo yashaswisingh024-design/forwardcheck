@@ -264,11 +264,44 @@ async function requestGemini(
         continue;
       }
 
-      // For transient service failures, immediately try the next model.
+      // Retry transient failures once on the same model, then move to the
+      // next known-good fallback model. This absorbs brief 429/5xx capacity spikes.
       if ([429, 500, 502, 503, 504].includes(response.status)) {
+        const retryController = new AbortController();
+        const retryTimeout = setTimeout(() => retryController.abort(), 12000);
+        try {
+          logger.warn(
+            { model: modelName, status: response.status },
+            "[VERIFY] Gemini transient failure; retrying once",
+          );
+          const retryResponse = await fetch(geminiUrl, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "x-goog-api-key": geminiKey,
+            },
+            body,
+            signal: retryController.signal,
+          });
+
+          logger.info(
+            { model: modelName, status: retryResponse.status },
+            "[VERIFY] Gemini retry response status",
+          );
+
+          if (retryResponse.ok) return retryResponse;
+        } catch (retryErr) {
+          logger.warn(
+            { model: modelName, err: retryErr },
+            "[VERIFY] Gemini retry failed",
+          );
+        } finally {
+          clearTimeout(retryTimeout);
+        }
+
         logger.warn(
           { model: modelName, status: response.status, hasFallback: modelIndex < models.length - 1 },
-          "[VERIFY] Gemini temporarily unavailable",
+          "[VERIFY] Gemini still unavailable; trying fallback",
         );
         continue;
       }
@@ -307,7 +340,7 @@ async function requestGemini(
   }
 
   throw new VerificationError(
-    "Live verification is temporarily busy. Please try again.",
+    "Live verification is temporarily unavailable after multiple AI attempts. Please try again in a few seconds.",
     503,
     "GEMINI_UNAVAILABLE",
   );
@@ -399,12 +432,11 @@ Return ONLY valid JSON:
         },
         required: ["verdict", "confidence", "summary", "why", "evidence", "correction"],
       },
-      temperature: 0.1,
     },
   });
 
   const response = await requestGemini(
-    [modelName, "gemini-2.5-flash-lite"],
+    [modelName, "gemini-3.5-flash-lite", "gemini-3.6-flash"],
     body,
     geminiKey,
   );
