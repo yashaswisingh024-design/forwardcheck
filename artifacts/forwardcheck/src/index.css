@@ -1419,3 +1419,36 @@ html, body {
     animation: none;
   }
 }
+
+
+/* Clickable brand: return to the home verification screen */
+.fc-brand-home {
+  appearance: none;
+  border: 0;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.fc-brand-home .fc-logo-badge,
+.fc-brand-home .fc-brand-title {
+  transition: transform 180ms ease, opacity 180ms ease;
+}
+
+.fc-brand-home:hover .fc-logo-badge {
+  transform: translateY(-1px) rotate(-2deg);
+}
+
+.fc-brand-home:hover .fc-brand-title {
+  opacity: 0.86;
+}
+
+.fc-brand-home:focus-visible {
+  outline: 2px solid var(--fc-green-light);
+  outline-offset: 6px;
+  border-radius: 10px;
+}
